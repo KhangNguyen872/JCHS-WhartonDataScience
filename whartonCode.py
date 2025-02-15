@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from kerastuner.tuners import RandomSearch
 
 # Elo rating system parameters
 BASE_ELO = 1500  # Default starting Elo for all teams
@@ -32,28 +34,29 @@ def train_elo(df):
     """Processes game results and applies Elo rating system to rank teams."""
     elo_ratings = {}  # Dictionary to store each team's current Elo rating
 
-    for _, row in df.iterrows():
-        team = row["team"]
-        game_id = row["game_id"]
-        home_away = row["home_away"]
-        team_score = row["team_score"]
-        opponent_score = row["opponent_team_score"]
+    # Iterate over unique game IDs
+    for game_id in df["game_id"].unique():
+        game_df = df[df["game_id"] == game_id]
+        if len(game_df) != 2:
+            continue  # Skip if the game doesn't have exactly two teams
 
-        # Find the opponent for this game
-        opponent_row = df[(df["game_id"] == game_id) & (df["team"] != team)]
-        if (not opponent_row.empty):
-            opponent = opponent_row.iloc[0]["team"]
-        else:
-            continue  # Skip if no opponent is found
+        team_row = game_df.iloc[0]
+        opponent_row = game_df.iloc[1]
+
+        team = team_row["team"]
+        opponent = opponent_row["team"]
+        home_away = team_row["home_away"]
+        team_score = team_row["team_score"]
+        opponent_score = opponent_row["team_score"]
 
         # Initialize Elo ratings if new team
-        if (team not in elo_ratings):
+        if team not in elo_ratings:
             elo_ratings[team] = BASE_ELO
-        if (opponent not in elo_ratings):
+        if opponent not in elo_ratings:
             elo_ratings[opponent] = BASE_ELO
 
         # Adjust Elo for home advantage
-        if (home_away == 'home'):
+        if home_away == 'home':
             team_elo = elo_ratings[team] + HOME_ADVANTAGE
             opponent_elo = elo_ratings[opponent]
         else:
@@ -61,7 +64,7 @@ def train_elo(df):
             opponent_elo = elo_ratings[opponent] + HOME_ADVANTAGE
 
         # Determine winner and loser
-        if (team_score > opponent_score):
+        if team_score > opponent_score:
             winner, loser = team, opponent
             winner_elo, loser_elo = team_elo, opponent_elo
         else:
@@ -77,27 +80,29 @@ def prepare_data(df, elo_ratings):
     """Prepares data for neural network training."""
     X = []
     y = []
+    teams = []  # To store team information for group-based splitting
 
-    for _, row in df.iterrows():
-        team = row["team"]
-        game_id = row["game_id"]
-        home_away = row["home_away"]
-        team_score = row["team_score"]
-        opponent_score = row["opponent_team_score"]
+    # Iterate over unique game IDs
+    for game_id in df["game_id"].unique():
+        game_df = df[df["game_id"] == game_id]
+        if len(game_df) != 2:
+            continue  # Skip if the game doesn't have exactly two teams
 
-        # Find the opponent for this game
-        opponent_row = df[(df["game_id"] == game_id) & (df["team"] != team)]
-        if (not opponent_row.empty):
-            opponent = opponent_row.iloc[0]["team"]
-        else:
-            continue  # Skip if no opponent is found
+        team_row = game_df.iloc[0]
+        opponent_row = game_df.iloc[1]
+
+        team = team_row["team"]
+        opponent = opponent_row["team"]
+        home_away = team_row["home_away"]
+        team_score = team_row["team_score"]
+        opponent_score = opponent_row["team_score"]
 
         # Get Elo ratings
         team_elo = elo_ratings.get(team, BASE_ELO)
         opponent_elo = elo_ratings.get(opponent, BASE_ELO)
 
         # Add home advantage
-        if (home_away == 'home'):
+        if home_away == 'home':
             team_elo += HOME_ADVANTAGE
         else:
             opponent_elo += HOME_ADVANTAGE
@@ -106,35 +111,47 @@ def prepare_data(df, elo_ratings):
         features = [
             team_elo,
             opponent_elo,
-            1 if (home_away == 'home') else 0,  # Home/Away
-            row["FGA_2"],  # 2-point field goal attempts
-            row["FGM_2"],  # 2-point field goals made
-            row["FGA_3"],  # 3-point field goal attempts
-            row["FGM_3"],  # 3-point field goals made
-            row["BLK"],    # Blocks
-            row["STL"],    # Steals
-            row["TOV"],    # Turnovers
-            row["AST"],    # Assists
-            row["OREB"],   # Offensive rebounds
-            row["DREB"],   # Defensive rebounds
-            row["FTA"],    # Free throw attempts
-            row["FTM"],    # Free throws made
+            1 if home_away == 'home' else 0,  # Home/Away
+            team_row["FGA_2"],  # 2-point field goal attempts
+            team_row["FGM_2"],  # 2-point field goals made
+            team_row["FGA_3"],  # 3-point field goal attempts
+            team_row["FGM_3"],  # 3-point field goals made
+            team_row["BLK"],    # Blocks
+            team_row["STL"],    # Steals
+            team_row["TOV"],    # Turnovers
+            team_row["AST"],    # Assists
+            team_row["OREB"],   # Offensive rebounds
+            team_row["DREB"],   # Defensive rebounds
+            team_row["FTA"],    # Free throw attempts
+            team_row["FTM"],    # Free throws made
         ]
         X.append(features)
 
         # Label: 1 if team wins, 0 if team loses
-        y.append(1 if (team_score > opponent_score) else 0)
+        y.append(1 if team_score > opponent_score else 0)
 
-    return np.array(X), np.array(y)
+        # Store team information for group-based splitting
+        teams.append(team)
 
-def build_neural_network(input_shape):
-    """Builds a deeper neural network model."""
-    model = Sequential([
-        Dense(128, activation='relu', input_shape=(input_shape,)),  # Input layer
-        Dense(64, activation='relu'),                             # Hidden layer 1
-        Dense(32, activation='relu'),                             # Hidden layer 2
-        Dense(1, activation='sigmoid')                             # Output layer
-    ])
+    return np.array(X), np.array(y), np.array(teams)
+
+def build_model(hp):
+    """Builds a neural network model with hyperparameter tuning."""
+    model = Sequential()
+
+    # Tune the number of layers and units
+    for i in range(hp.Int('num_layers', 1, 3)):
+        model.add(Dense(units=hp.Int(f'units_{i}', min_value=32, max_value=256, step=32),
+                      activation='relu'))
+        model.add(Dropout(rate=hp.Float(f'dropout_{i}', min_value=0.0, max_value=0.5, step=0.1)))
+
+    # Output layer
+    model.add(Dense(1, activation='sigmoid'))
+
+    # Tune the learning rate
+    learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
+
+    # Compile the model
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
@@ -142,30 +159,56 @@ def main(csv_file):
     """Loads CSV file, processes the data, and ranks teams using Elo ratings and neural network."""
     df = pd.read_csv(csv_file)
 
-    # Train Elo rankings
-    elo_ratings = train_elo(df)
+    # Split data into train and test sets using GroupShuffleSplit
+    group_splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(group_splitter.split(df, groups=df["team"]))
+    train_df = df.iloc[train_idx]
+    test_df = df.iloc[test_idx]
 
-    # Prepare data for neural network
-    X, y = prepare_data(df, elo_ratings)
+    # Train Elo rankings on the training set only
+    elo_ratings = train_elo(train_df)
 
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Prepare data for neural network using the trained Elo ratings
+    X_train, y_train, train_teams = prepare_data(train_df, elo_ratings)
+    X_test, y_test, test_teams = prepare_data(test_df, elo_ratings)
+
+    # Verify no overlapping teams between train and test sets
+    train_teams_set = set(train_teams)
+    test_teams_set = set(test_teams)
+    overlap = train_teams_set.intersection(test_teams_set)
+    if overlap:
+        print(f"Warning: {len(overlap)} teams appear in both train and test sets: {overlap}")
+    else:
+        print("No teams overlap between train and test sets.")
 
     # Standardize features
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
 
-    # Build and train neural network
-    model = build_neural_network(X_train.shape[1])
-    model.fit(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2)
+    # Hyperparameter tuning with Keras Tuner
+    tuner = RandomSearch(
+        build_model,
+        objective='val_accuracy',
+        max_trials=20,
+        executions_per_trial=1,
+        directory='tuner_results',
+        project_name='team_ranking'
+    )
 
-    # Evaluate neural network
-    loss, accuracy = model.evaluate(X_test, y_test)
+    # Perform hyperparameter search
+    tuner.search(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2)
+
+    # Get the best model
+    best_model = tuner.get_best_models(num_models=1)[0]
+
+    # Train the best model with early stopping
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    best_model.fit(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2, callbacks=[early_stopping])
+
+    # Evaluate the best model
+    loss, accuracy = best_model.evaluate(X_test, y_test)
     print(f"\nNeural Network Test Accuracy: {accuracy:.2f}")
-
-    # Use neural network to predict win probabilities
-    predictions = model.predict(X_test)
 
     # Print top teams based on Elo ratings
     sorted_teams = sorted(elo_ratings.items(), key=lambda x: x[1], reverse=True)
@@ -174,6 +217,6 @@ def main(csv_file):
         print(f"{rank}. {team} - Elo: {rating:.2f}")
 
 # Run program
-if (__name__ == "__main__"):
+if __name__ == "__main__":
     csv_file = "games_2022.csv"  # Replace with your CSV file name
     main(csv_file)
