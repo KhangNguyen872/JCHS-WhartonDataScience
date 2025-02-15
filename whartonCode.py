@@ -41,19 +41,19 @@ def train_elo(df):
 
         # Find the opponent for this game
         opponent_row = df[(df["game_id"] == game_id) & (df["team"] != team)]
-        if not opponent_row.empty:
+        if (not opponent_row.empty):
             opponent = opponent_row.iloc[0]["team"]
         else:
             continue  # Skip if no opponent is found
 
         # Initialize Elo ratings if new team
-        if team not in elo_ratings:
+        if (team not in elo_ratings):
             elo_ratings[team] = BASE_ELO
-        if opponent not in elo_ratings:
+        if (opponent not in elo_ratings):
             elo_ratings[opponent] = BASE_ELO
 
         # Adjust Elo for home advantage
-        if home_away == 'home':
+        if (home_away == 'home'):
             team_elo = elo_ratings[team] + HOME_ADVANTAGE
             opponent_elo = elo_ratings[opponent]
         else:
@@ -61,7 +61,7 @@ def train_elo(df):
             opponent_elo = elo_ratings[opponent] + HOME_ADVANTAGE
 
         # Determine winner and loser
-        if team_score > opponent_score:
+        if (team_score > opponent_score):
             winner, loser = team, opponent
             winner_elo, loser_elo = team_elo, opponent_elo
         else:
@@ -87,7 +87,7 @@ def prepare_data(df, elo_ratings):
 
         # Find the opponent for this game
         opponent_row = df[(df["game_id"] == game_id) & (df["team"] != team)]
-        if not opponent_row.empty:
+        if (not opponent_row.empty):
             opponent = opponent_row.iloc[0]["team"]
         else:
             continue  # Skip if no opponent is found
@@ -97,25 +97,43 @@ def prepare_data(df, elo_ratings):
         opponent_elo = elo_ratings.get(opponent, BASE_ELO)
 
         # Add home advantage
-        if home_away == 'home':
+        if (home_away == 'home'):
             team_elo += HOME_ADVANTAGE
         else:
             opponent_elo += HOME_ADVANTAGE
 
-        # Features: Team Elo, Opponent Elo, Home/Away (encoded as 1 for home, 0 for away)
-        X.append([team_elo, opponent_elo, 1 if home_away == 'home' else 0])
+        # Features: Team Elo, Opponent Elo, Home/Away, and additional statistics
+        features = [
+            team_elo,
+            opponent_elo,
+            1 if (home_away == 'home') else 0,  # Home/Away
+            row["FGA_2"],  # 2-point field goal attempts
+            row["FGM_2"],  # 2-point field goals made
+            row["FGA_3"],  # 3-point field goal attempts
+            row["FGM_3"],  # 3-point field goals made
+            row["BLK"],    # Blocks
+            row["STL"],    # Steals
+            row["TOV"],    # Turnovers
+            row["AST"],    # Assists
+            row["OREB"],   # Offensive rebounds
+            row["DREB"],   # Defensive rebounds
+            row["FTA"],    # Free throw attempts
+            row["FTM"],    # Free throws made
+        ]
+        X.append(features)
 
         # Label: 1 if team wins, 0 if team loses
-        y.append(1 if team_score > opponent_score else 0)
+        y.append(1 if (team_score > opponent_score) else 0)
 
     return np.array(X), np.array(y)
 
 def build_neural_network(input_shape):
-    """Builds a simple neural network model."""
+    """Builds a deeper neural network model."""
     model = Sequential([
-        Dense(64, activation='relu', input_shape=(input_shape,)),  # Input layer
-        Dense(32, activation='relu'),                            # Hidden layer
-        Dense(1, activation='sigmoid')                            # Output layer
+        Dense(128, activation='relu', input_shape=(input_shape,)),  # Input layer
+        Dense(64, activation='relu'),                             # Hidden layer 1
+        Dense(32, activation='relu'),                             # Hidden layer 2
+        Dense(1, activation='sigmoid')                             # Output layer
     ])
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
@@ -156,6 +174,6 @@ def main(csv_file):
         print(f"{rank}. {team} - Elo: {rating:.2f}")
 
 # Run program
-if __name__ == "__main__":
+if (__name__ == "__main__"):
     csv_file = "games_2022.csv"  # Replace with your CSV file name
     main(csv_file)
