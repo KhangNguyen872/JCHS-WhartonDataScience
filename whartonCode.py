@@ -6,7 +6,10 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 from kerastuner.tuners import RandomSearch
+import shutil
 
+# Clear previous tuner results
+shutil.rmtree('tuner_results', ignore_errors=True)
 # Elo rating system parameters
 BASE_ELO = 1500  # Default starting Elo for all teams
 K_FACTOR = 30  # How much the rating adjusts per game
@@ -30,9 +33,9 @@ def update_elo(winner_elo, loser_elo, k=K_FACTOR):
 
     return new_winner_elo, new_loser_elo
 
-def train_elo(df):
+def train_elo(df, all_teams):
     """Processes game results and applies Elo rating system to rank teams."""
-    elo_ratings = {}  # Dictionary to store each team's current Elo rating
+    elo_ratings = {team: BASE_ELO for team in all_teams}  # Initialize Elo for all teams
 
     # Iterate over unique game IDs
     for game_id in df["game_id"].unique():
@@ -48,12 +51,6 @@ def train_elo(df):
         home_away = team_row["home_away"]
         team_score = team_row["team_score"]
         opponent_score = opponent_row["team_score"]
-
-        # Initialize Elo ratings if new team
-        if team not in elo_ratings:
-            elo_ratings[team] = BASE_ELO
-        if opponent not in elo_ratings:
-            elo_ratings[opponent] = BASE_ELO
 
         # Adjust Elo for home advantage
         if home_away == 'home':
@@ -128,7 +125,7 @@ def prepare_data(df, elo_ratings):
         X.append(features)
 
         # Label: 1 if team wins, 0 if team loses
-        y.append(1 if team_score > opponent_score else 0)
+        y.append(1 if (team_score > opponent_score) else 0)
 
         # Store team information for group-based splitting
         teams.append(team)
@@ -155,9 +152,16 @@ def build_model(hp):
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
-def main(csv_file):
+def main(csv_file, region_csv_file):
     """Loads CSV file, processes the data, and ranks teams using Elo ratings and neural network."""
     df = pd.read_csv(csv_file)
+    region_df = pd.read_csv(region_csv_file)
+
+    # Merge the region information with the main dataframe
+    df = df.merge(region_df, on="team")
+
+    # Get the list of all teams
+    all_teams = region_df["team"].unique()
 
     # Split data into train and test sets using GroupShuffleSplit
     group_splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
@@ -166,7 +170,7 @@ def main(csv_file):
     test_df = df.iloc[test_idx]
 
     # Train Elo rankings on the training set only
-    elo_ratings = train_elo(train_df)
+    elo_ratings = train_elo(train_df, all_teams)
 
     # Prepare data for neural network using the trained Elo ratings
     X_train, y_train, train_teams = prepare_data(train_df, elo_ratings)
@@ -190,8 +194,8 @@ def main(csv_file):
     tuner = RandomSearch(
         build_model,
         objective='val_accuracy',
-        max_trials=20,
-        executions_per_trial=1,
+        max_trials=10,
+        executions_per_trial=2,  # Increase executions for better results
         directory='tuner_results',
         project_name='team_ranking'
     )
@@ -210,13 +214,18 @@ def main(csv_file):
     loss, accuracy = best_model.evaluate(X_test, y_test)
     print(f"\nNeural Network Test Accuracy: {accuracy:.2f}")
 
-    # Print top teams based on Elo ratings
-    sorted_teams = sorted(elo_ratings.items(), key=lambda x: x[1], reverse=True)
-    print("\n🏀 Final Team Rankings (Elo Scores):")
-    for rank, (team, rating) in enumerate(sorted_teams, start=1):
-        print(f"{rank}. {team} - Elo: {rating:.2f}")
+    # Print top teams based on Elo ratings within each region
+    regions = region_df["region"].unique()
+    for region in regions:
+        region_teams = region_df[region_df["region"] == region]["team"]
+        region_elo_ratings = {team: elo_ratings[team] for team in region_teams if team in elo_ratings}
+        sorted_teams = sorted(region_elo_ratings.items(), key=lambda x: x[1], reverse=True)
+        print(f"\n🏀 Final Team Rankings for {region} (Elo Scores):")
+        for rank, (team, rating) in enumerate(sorted_teams, start=1):
+            print(f"{rank}. {team} - Elo: {rating:.2f}")
 
 # Run program
-if __name__ == "__main__":
-    csv_file = "games_2022.csv"  # Replace with your CSV file name
-    main(csv_file)
+if (__name__ == "__main__"):
+    csv_file = "games_2022.csv"
+    region_csv_file = "Team Region Groups.csv"  # Replace with your region CSV file name
+    main(csv_file, region_csv_file)
